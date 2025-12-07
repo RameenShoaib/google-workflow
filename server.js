@@ -56,19 +56,11 @@
 //   console.log(`API running on port ${PORT}`);
 // });
 
-console.log("DB_HOST:", process.env.DB_HOST);
-console.log("DB_PORT:", process.env.DB_PORT);
-console.log("DB_USER:", process.env.DB_USER);
-console.log("DB_PASS:", process.env.DB_PASS ? "****" : undefined);
-console.log("DB_NAME:", process.env.DB_NAME);
-
-
 // server.js
 const express = require("express");
 const mysql = require("mysql2");
 const cors = require("cors");
 require("dotenv").config();
-
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -77,23 +69,17 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(cors());
 
-// MySQL connection (Aiven - uses environment variables)
-const db = mysql.createConnection({
-  host: process.env.DB_HOST,       // Aiven Host
-  port: process.env.DB_PORT,       // Aiven Port
-  user: process.env.DB_USER,       // avnadmin
-  password: process.env.DB_PASS,   // Aiven password
-  database: process.env.DB_NAME,   // defaultdb
-  ssl: { rejectUnauthorized: false }
-});
-
-// Connect to MySQL
-db.connect((err) => {
-  if (err) {
-    console.error("❌ DB Connection error:", err);
-    return;
-  }
-  console.log("✅ Connected to Aiven MySQL!");
+// 🔹 Use a connection POOL instead of a single connection
+const db = mysql.createPool({
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  database: process.env.DB_NAME,
+  ssl: { rejectUnauthorized: false },
+  waitForConnections: true,
+  connectionLimit: 10,  // max 10 connections
+  queueLimit: 0
 });
 
 // Test route
@@ -101,7 +87,7 @@ app.get("/", (req, res) => {
   res.send("Node.js API is running. Use POST /save-form to send data.");
 });
 
-// ⬅️ TEMP ROUTE TO CREATE TABLE IN AIVEN
+// TEMP ROUTE: Create table if not exists
 app.get("/create-table", (req, res) => {
   const sql = `
     CREATE TABLE IF NOT EXISTS form_submissions (
@@ -112,24 +98,17 @@ app.get("/create-table", (req, res) => {
       submitted_on TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `;
-
   db.query(sql, (err) => {
-    if (err) {
-      console.log("❌ Table creation error:", err);
-      return res.send("Table creation error: " + err);
-    }
+    if (err) return res.send("❌ Table creation error: " + err);
     res.send("✅ Table 'form_submissions' created successfully!");
   });
 });
 
 // MAIN ENDPOINT for saving Google Form data
 app.post("/save-form", (req, res) => {
-  const data = req.body;
+  const { full_name, contact_number, email } = req.body;
 
-  console.log("Incoming Data:", data);
-
-  // Validate
-  if (!data.full_name || !data.contact_number || !data.email) {
+  if (!full_name || !contact_number || !email) {
     return res.status(400).send("Missing required fields");
   }
 
@@ -138,7 +117,7 @@ app.post("/save-form", (req, res) => {
     VALUES (?, ?, ?)
   `;
 
-  db.query(sql, [data.full_name, data.contact_number, data.email], (err, result) => {
+  db.query(sql, [full_name, contact_number, email], (err, result) => {
     if (err) {
       console.error("❌ DB Insert Error:", err);
       return res.status(500).send("Database insert error: " + err.sqlMessage);
@@ -152,4 +131,5 @@ app.post("/save-form", (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 API running on port ${PORT}`);
 });
+
 
