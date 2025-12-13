@@ -1,4 +1,3 @@
-
 // server.js
 const express = require("express");
 const mysql = require("mysql2/promise"); 
@@ -12,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(cors());
 
-// --- DATABASE CONNECTION POOL ---
+// --- DATABASE CONNECTION POOL (Fixed for "Sleep" Issues) ---
 const pool = mysql.createPool({
   host: process.env.DB_HOST,       
   port: process.env.DB_PORT,       
@@ -20,6 +19,8 @@ const pool = mysql.createPool({
   password: process.env.DB_PASS,   
   database: process.env.DB_NAME,   
   ssl: { rejectUnauthorized: false }, 
+  
+  // ANTI-SLEEP SETTINGS (Crucial for Aiven)
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
@@ -27,7 +28,7 @@ const pool = mysql.createPool({
   keepAliveInitialDelay: 0
 });
 
-// Test Connection
+// Test DB Connection on Startup
 (async () => {
     try {
         const connection = await pool.getConnection();
@@ -38,13 +39,17 @@ const pool = mysql.createPool({
     }
 })();
 
-app.get("/", (req, res) => { res.send("Server is Awake."); });
+// Health Check Route
+app.get("/", (req, res) => {
+  res.send("Server is Awake and Running.");
+});
 
 // --- MAIN SUBMISSION ENDPOINT ---
 app.post("/api/submit-attendance", async (req, res) => {
   const data = req.body;
   console.log("📥 Incoming Data:", JSON.stringify(data)); 
 
+  // 1. Validation
   if (!data.email || !data.event_name) {
     console.error("❌ Error: Missing Email or Event Name");
     return res.status(400).json({ status: "error", message: "Missing email or event_name" });
@@ -57,22 +62,30 @@ app.post("/api/submit-attendance", async (req, res) => {
     await connection.beginTransaction();
 
     // --- STEP A: HANDLE PARTICIPANT ---
-    // 1. Clean ID (Remove hyphens)
+    
+    // 1. CLEAN THE ID CARD (Remove hyphens or spaces automatically)
+    // This turns "42101-1234567-1" into "4210112345671"
     let rawID = data.identity_card_num || "";
-    let cleanID = rawID.toString().replace(/[^0-9]/g, ''); 
+    let cleanID = rawID.toString().replace(/[^0-9]/g, ''); // Removes anything that is not a number
 
+    // 2. CHECK FOR EXISTING USER (By Email OR ID Card)
+    // This prevents duplicates if someone changes their email but keeps the same ID.
     const [existingUsers] = await connection.query(
-        'SELECT participant_id FROM participants WHERE email = ?', 
-        [data.email]
+        'SELECT participant_id FROM participants WHERE email = ? OR identity_card_num = ?', 
+        [data.email, cleanID]
     );
 
     let participantId;
+
     if (existingUsers.length > 0) {
+        // Found them!
         participantId = existingUsers[0].participant_id;
     } else {
+        // User is New -> Create them
+        // FIX: Added 'identity_card_num' to the INSERT statement and values
         const [newUser] = await connection.query(
             'INSERT INTO participants (email, full_name, phone, identity_card_num) VALUES (?, ?, ?, ?)',
-            [data.email, data.full_name, data.contact_number, cleanID]
+            [data.email, data.full_name, data.contact_number, cleanID] 
         );
         participantId = newUser.insertId;
     }
@@ -92,8 +105,7 @@ app.post("/api/submit-attendance", async (req, res) => {
     const eventId = events[0].event_id;
     const maxCapacity = events[0].capacity;
 
-    // --- STEP C: CHECK CAPACITY (FIXED) ---
-    // We use ? for 'confirmed' to avoid the SQL Error
+    // --- STEP C: CHECK CAPACITY ---
     const [countResult] = await connection.query(
         'SELECT COUNT(*) as count FROM attendance WHERE event_id = ? AND status = ?',
         [eventId, 'confirmed']
@@ -119,6 +131,7 @@ app.post("/api/submit-attendance", async (req, res) => {
   } catch (err) {
     if (connection) await connection.rollback();
 
+    // Handle Duplicate Entry
     if (err.code === 'ER_DUP_ENTRY') {
         console.log(`⚠️ Duplicate Scan: ${data.email}`);
         return res.status(200).json({ status: "exists", message: "Already Registered" });
