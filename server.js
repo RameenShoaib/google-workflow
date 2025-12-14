@@ -65,10 +65,11 @@ app.post("/api/submit-attendance", async (req, res) => {
     let rawID = data.identity_card_num || "";
     let cleanID = rawID.toString().replace(/[^0-9]/g, '');
 
-    // 2. CHECK FOR EXISTING USER
+    // 2. CHECK FOR EXISTING USER (UPDATED: Check ONLY by Identity Card)
+    // We removed 'OR email = ?' so multiple people can share an email
     const [existingUsers] = await connection.query(
-        'SELECT participant_id FROM participants WHERE email = ? OR identity_card_num = ?', 
-        [data.email, cleanID]
+        'SELECT participant_id FROM participants WHERE identity_card_num = ?', 
+        [cleanID]
     );
 
     let participantId;
