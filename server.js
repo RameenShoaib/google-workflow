@@ -11,16 +11,14 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(cors());
 
-// --- DATABASE CONNECTION POOL (Fixed for "Sleep" Issues) ---
+// --- DATABASE CONNECTION POOL ---
 const pool = mysql.createPool({
-  host: process.env.DB_HOST,       
-  port: process.env.DB_PORT,       
-  user: process.env.DB_USER,       
-  password: process.env.DB_PASS,   
-  database: process.env.DB_NAME,   
+  host: process.env.DB_HOST,        
+  port: process.env.DB_PORT,        
+  user: process.env.DB_USER,        
+  password: process.env.DB_PASS,    
+  database: process.env.DB_NAME,    
   ssl: { rejectUnauthorized: false }, 
-  
-  // ANTI-SLEEP SETTINGS (Crucial for Aiven)
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
@@ -63,13 +61,11 @@ app.post("/api/submit-attendance", async (req, res) => {
 
     // --- STEP A: HANDLE PARTICIPANT ---
     
-    // 1. CLEAN THE ID CARD (Remove hyphens or spaces automatically)
-    // This turns "42101-1234567-1" into "4210112345671"
+    // 1. CLEAN THE ID CARD
     let rawID = data.identity_card_num || "";
-    let cleanID = rawID.toString().replace(/[^0-9]/g, ''); // Removes anything that is not a number
+    let cleanID = rawID.toString().replace(/[^0-9]/g, '');
 
-    // 2. CHECK FOR EXISTING USER (By Email OR ID Card)
-    // This prevents duplicates if someone changes their email but keeps the same ID.
+    // 2. CHECK FOR EXISTING USER
     const [existingUsers] = await connection.query(
         'SELECT participant_id FROM participants WHERE email = ? OR identity_card_num = ?', 
         [data.email, cleanID]
@@ -78,11 +74,8 @@ app.post("/api/submit-attendance", async (req, res) => {
     let participantId;
 
     if (existingUsers.length > 0) {
-        // Found them!
         participantId = existingUsers[0].participant_id;
     } else {
-        // User is New -> Create them
-        // FIX: Added 'identity_card_num' to the INSERT statement and values
         const [newUser] = await connection.query(
             'INSERT INTO participants (email, full_name, phone, identity_card_num) VALUES (?, ?, ?, ?)',
             [data.email, data.full_name, data.contact_number, cleanID] 
@@ -105,16 +98,22 @@ app.post("/api/submit-attendance", async (req, res) => {
     const eventId = events[0].event_id;
     const maxCapacity = events[0].capacity;
 
-    // --- STEP C: CHECK CAPACITY ---
+    // --- STEP C: CHECK CAPACITY (STRICT MODE) ---
+    // [Updated Logic]: Count BOTH 'confirmed' and 'present' as occupied seats.
     const [countResult] = await connection.query(
-        'SELECT COUNT(*) as count FROM attendance WHERE event_id = ? AND status = ?',
-        [eventId, 'confirmed']
+        "SELECT COUNT(*) as count FROM attendance WHERE event_id = ? AND status IN ('confirmed', 'present')",
+        [eventId]
     );
     const currentCount = countResult[0].count;
+    
+    console.log(`📊 Capacity Check: ${currentCount} seats taken out of ${maxCapacity}`);
 
+    // STRICT DECISION LOGIC
     let status = 'confirmed';
+    
     if (currentCount >= maxCapacity) {
-        status = 'waitlist';
+        status = 'waitlist'; 
+        console.log("⚠️ Event is FULL. Assigning 'waitlist' status.");
     }
 
     // --- STEP D: RECORD ATTENDANCE ---
